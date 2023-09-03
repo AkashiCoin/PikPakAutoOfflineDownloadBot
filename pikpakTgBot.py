@@ -18,6 +18,7 @@ logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=lo
 SCHEMA = 'https' if ARIA2_HTTPS else 'http'
 PIKPAK_API_URL = "https://api-drive.mypikpak.com"
 PIKPAK_USER_URL = "https://user.mypikpak.com"
+PIKPAK_REGISTER_API = "https://pikpak.loli.vet/create_vip"
 
 # 记录登陆账号的headers，调用api用
 pikpak_headers = [None] * len(USER)
@@ -73,12 +74,15 @@ class AdminHandler(Handler):
         return False
 
 
-def registerFuc():
+def registerFuc(force: bool = False):
     try:
-        url = 'https://pikpak.kinh.cc/GetFreeAccount.php'
-        resp = requests.get(url)
-        account = resp.json()['Data'].split('|')[0].split(':')[1].strip()
-        password = resp.json()['Data'].split('|')[1].split(':')[1].strip()
+        resp = requests.get(f"{PIKPAK_REGISTER_API}{'?force=1'if force else ''}")
+        resp_json = resp.json()
+        url = resp_json.get("url")
+        if url:
+            return resp_json
+        account = resp_json.get("email")
+        password = resp_json.get("password")
         if account and password:
             return {'account': account, 'password': password}
         else:
@@ -777,7 +781,7 @@ def clean(update: Update, context: CallbackContext):
 def print_user_vip():
     print_info = '账号      vip\n'
     for each_user in USER:
-        flag = get_my_vip(each_user)
+        flag, message = get_my_vip(each_user)
         if flag == 0:
             flag = '√'
         elif flag == 1:
@@ -786,8 +790,16 @@ def print_user_vip():
             flag = '?'
         else:
             flag = '××'  # 登陆失败，检查账号密码
-        print_info += f' `{each_user}`\[{flag}]\n'
+        print_info += f' `{each_user}`\[{flag}] {message}\n'
     return print_info.rstrip()
+
+
+
+# 打印注册url
+def print_register_info(url: str):
+    info = "账号池无VIP账号，进入下面链接进行验证后自动注册\n"
+    info += url
+    return info
 
 
 # 仅打印账号
@@ -841,7 +853,7 @@ def get_my_vip(account):
         me_url = f"{PIKPAK_API_URL}/drive/v1/privilege/vip"
         me_result = requests.get(url=me_url, headers=login_headers, timeout=5).json()
     except Exception:
-        return 3
+        return 3, ""
 
     if "error" in me_result:
         if me_result['error_code'] == 16:
@@ -851,14 +863,14 @@ def get_my_vip(account):
             me_result = requests.get(url=me_url, headers=login_headers, timeout=5).json()
         else:
             logging.error(f"获取vip信息失败{me_result['error_description']}")
-            return 3
+            return 3, ""
 
     if me_result['data']['status'] == 'ok':
-        return 0
+        return 0, "过期时间" + me_result['data']['expire']
     elif me_result['data']['status'] == 'invalid':
-        return 1
+        return 1, ""
     else:  # 暂未见过
-        return 2
+        return 2, ""
 
 
 # 账号管理功能
@@ -917,12 +929,28 @@ def account_manage(update: Update, context: CallbackContext):
         if len(argv) == 1:  # 一个参数才是正确形式
             register = registerFuc()
             if register:
-                USER.insert(0, register['account'])
-                PASSWORD.insert(0, register['password'])
-                pikpak_headers.insert(0, None)  # 设置pikpak_headers
-                record_config()  # 记录进入config文件
-                print_info = print_user()
-                context.bot.send_message(chat_id=update.effective_chat.id, text=print_info, parse_mode='Markdown')
+                url = register.get("url")
+                if url:
+                    print_info = print_register_info(url)
+                    pikpak_headers.insert(0, None)  # 设置pikpak_headers
+                    context.bot.send_message(chat_id=update.effective_chat.id, text=print_info)
+                else:
+                    if register['account'] not in USER:
+                        USER.insert(0, register['account'])
+                        PASSWORD.insert(0, register['password'])
+                    pikpak_headers.insert(0, None)  # 设置pikpak_headers
+                    record_config()  # 记录进入config文件
+                    print_info = print_user()
+                    context.bot.send_message(chat_id=update.effective_chat.id, text=print_info, parse_mode='Markdown')
+            else:
+                context.bot.send_message(chat_id=update.effective_chat.id, text='注册失败，请重试！')
+        elif len(argv) == 2 and argv[1].startswith("f"):
+            register = registerFuc(True)
+            if register:
+                url = register.get("url")
+                if url:
+                    print_info = print_register_info(url)
+                    context.bot.send_message(chat_id=update.effective_chat.id, text=print_info)
             else:
                 context.bot.send_message(chat_id=update.effective_chat.id, text='注册失败，请重试！')
         else:
